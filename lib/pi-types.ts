@@ -2,6 +2,8 @@ import type {
   AgentSessionEvent,
   BashOperations,
   SessionManager,
+  SessionShutdownEvent,
+  SessionBeforeSwitchEvent,
   SettingsManager,
   SlashCommandInfo,
   Theme,
@@ -96,7 +98,8 @@ interface ExtensionRunnerLike {
     sourceInfo: SlashCommandInfo["sourceInfo"];
   }>;
   emit?(event:
-    | { type: "session_shutdown"; reason: "quit" }
+    | SessionShutdownEvent
+    | SessionBeforeSwitchEvent
     | { type: "session_before_fork"; entryId: string; position: "before" | "at" }
   ): Promise<unknown>;
   hasHandlers?(eventType: string): boolean;

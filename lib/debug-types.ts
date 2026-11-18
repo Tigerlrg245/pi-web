@@ -25,7 +25,7 @@ export interface DebugWrapperRun {
   waitingForMcp: boolean;
   runningTools: number;
   mutatingCommands: number;
-  replacement: "fork" | "clone" | null;
+  replacement: "fork" | "clone" | "new" | null;
 }
 
 export interface DebugWrapperIdle {

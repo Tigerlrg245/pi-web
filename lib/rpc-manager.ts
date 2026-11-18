@@ -26,7 +26,7 @@ import { computeLiveSessionTotalActiveMs } from "./session-timing";
 import { getProjectTrustStatus, projectTrustReloadOptions } from "./project-trust";
 import { notifySessionComplete } from "./web-push";
 import { hasActiveSessionLivenessProvider } from "./session-liveness";
-import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, ExtensionCommandContext, SessionShutdownEvent, SessionStartEvent, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import type { AgentSessionLike, ExtensionUiContextLike, ToolInfo } from "./pi-types";
 import type {
   ExtensionUiRequest,
@@ -160,7 +160,7 @@ type ExtensionUiRequestBody = Record<string, unknown> & {
 
 type ExtensionCommandContextActionsLike = {
   waitForIdle: () => Promise<void>;
-  newSession: () => Promise<{ cancelled: boolean }>;
+  newSession: ExtensionCommandContext["newSession"];
   fork: () => Promise<{ cancelled: boolean }>;
   navigateTree: (targetId: string, options?: { summarize?: boolean }) => Promise<{ cancelled: boolean }>;
   switchSession: () => Promise<{ cancelled: boolean }>;
@@ -300,6 +300,7 @@ export interface RpcSessionStartOptions {
   initialModel?: { provider: string; modelId: string };
   allowInitialModelFallback?: boolean;
   thinkingLevel?: ThinkingLevel;
+  sessionStartEvent?: SessionStartEvent;
 }
 
 const CODING_TOOL_NAMES = ["read", "bash", "powershell", "edit", "write", "grep", "find", "ls"];
@@ -386,7 +387,8 @@ export class AgentSessionWrapper {
   // Prompts waiting for the running compaction to finish (ParkedPrompt above).
   private parkedDuringCompaction: ParkedPrompt[] = [];
   private activeMutatingCommands = 0;
-  private sessionReplacement: "fork" | "clone" | null = null;
+  private sessionReplacement: "fork" | "clone" | "new" | null = null;
+  private replacedByNewSession = false;
   private agentRunNeedsCompletion = false;
   // Whether the last run ended because it was stopped (pi 1.1's `agent_settled.aborted`), not finished.
   private lastRunAborted = false;
@@ -1281,7 +1283,7 @@ export class AgentSessionWrapper {
   }
 
   private async withSessionReplacement<T>(
-    replacement: "fork" | "clone",
+    replacement: "fork" | "clone" | "new",
     operation: () => Promise<T>,
   ): Promise<T> {
     if (this.sessionReplacement) throw new Error("Session is already being copied");
@@ -2023,7 +2025,7 @@ export class AgentSessionWrapper {
     this.disposeMcpHost();
     // Tell attached SSE listeners to drop this instance so the browser
     // EventSource errors and reconnects instead of staying OPEN on a dead wrapper.
-    if (!this.extensionShutdownRequested) this.emit({ type: "session_shutdown" });
+    if (!this.extensionShutdownRequested && !this.replacedByNewSession) this.emit({ type: "session_shutdown" });
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.idleDeadlineAt = null;
     if (this.inner.isBashRunning) this.inner.abortBash();
@@ -2041,7 +2043,7 @@ export class AgentSessionWrapper {
         this.onDestroyCallback?.();
         // Here rather than in the registry's onDestroy callback, which a replacement swaps out.
         recordSessionClosed(this);
-        if (this.extensionShutdownRequested) {
+        if (this.extensionShutdownRequested || this.replacedByNewSession) {
           invalidateSessionPathCache(this.sessionId);
           if (this.sessionFile) invalidateSessionManagerCache(this.sessionFile);
           invalidateSessionListCache();
@@ -2077,7 +2079,7 @@ export class AgentSessionWrapper {
       .finally(finishDispose);
   }
 
-  async shutdown(): Promise<void> {
+  async shutdown(event: SessionShutdownEvent = { type: "session_shutdown", reason: "quit" }): Promise<void> {
     if (this.shutdownPromise) return this.shutdownPromise;
     if (!this._alive) return;
     // Closing starts before the first await, so a request that arrives while
@@ -2110,7 +2112,7 @@ export class AgentSessionWrapper {
         if (!this.sessionShutdownEmitted) {
           this.sessionShutdownEmitted = true;
           const emit = this.inner.extensionRunner?.emit;
-          if (typeof emit === "function") await this.emitSessionShutdown(emit);
+          if (typeof emit === "function") await this.emitSessionShutdown(emit, event);
         }
       } finally {
         this.destroy();
@@ -2128,11 +2130,12 @@ export class AgentSessionWrapper {
    */
   private async emitSessionShutdown(
     emit: NonNullable<AgentSessionLike["extensionRunner"]["emit"]>,
+    event: SessionShutdownEvent = { type: "session_shutdown", reason: "quit" },
   ): Promise<void> {
     // A synchronous throw becomes a rejection, and a rejection that arrives
     // after the deadline is still handled by the race.
     const handled = (async () => {
-      await emit.call(this.inner.extensionRunner, { type: "session_shutdown", reason: "quit" });
+      await emit.call(this.inner.extensionRunner, event);
     })();
     if (await this.raceShutdownDeadline(handled) === "timeout") {
       console.warn(
@@ -2693,13 +2696,64 @@ export class AgentSessionWrapper {
     };
   }
 
+  private async newSessionFromExtension(
+    options?: Parameters<ExtensionCommandContext["newSession"]>[0],
+  ): Promise<{ cancelled: boolean }> {
+    // An extension command can run inside its own pending prompt. Do not count
+    // that prompt as an agent turn, and never copy any of its conversation.
+    const busy = () => !this.isAlive() || !this.extensionsBound || this.shellRunning ||
+      this.inner.isStreaming || this.inner.isCompacting || this.pendingPromptCount > 1 ||
+      this.arrivingPromptCount > 0 || this.activeMutatingCommands > 1;
+    if (this.sessionReplacement || this.suppressCompletionNotifications || busy()) return { cancelled: true };
+
+    return this.withSessionReplacement("new", async () => {
+      const runner = this.inner.extensionRunner;
+      if (runner.hasHandlers?.("session_before_switch")) {
+        this.renewExtensionUiStop();
+        const signal = this.extensionUiAbortController.signal;
+        const result = await runner.emit?.({ type: "session_before_switch", reason: "new" });
+        if ((result as { cancel?: boolean } | undefined)?.cancel || signal.aborted || busy()) {
+          return { cancelled: true };
+        }
+      }
+      const source = this.inner.sessionManager;
+      const next = SessionManager.create(this.cwd, source.getSessionDir());
+      if (options?.parentSession !== undefined) next.newSession({ parentSession: options.parentSession });
+      await options?.setup?.(next);
+      if (busy()) return { cancelled: true };
+      const file = next.getSessionFile();
+      const header = next.getHeader();
+      if (!file || !header) throw new Error("Could not allocate a persistent new session");
+      // Write even an empty session: Telegram can own it before its first turn,
+      // and a browser or service restart must still be able to find its ID.
+      if (!existsSync(file)) {
+        writeFileSync(file, [header, ...next.getEntries()].map(entry => JSON.stringify(entry)).join("\n") + "\n", {
+          encoding: "utf8", flag: "wx", mode: 0o600,
+        });
+      }
+      const previousSessionFile = this.sessionFile || undefined;
+      this.replacedByNewSession = true;
+      await this.shutdown({ type: "session_shutdown", reason: "new", targetSessionFile: file });
+      const { session, realSessionId } = await startRpcSession(next.getSessionId(), file, this.cwd, {
+        sessionStartEvent: { type: "session_start", reason: "new", previousSessionFile },
+      });
+      await session.waitUntilReady();
+      cacheSessionPath(realSessionId, file);
+      invalidateSessionListCache();
+      if (options?.withSession) {
+        await options.withSession((session.inner as AgentSession).createReplacedSessionContext());
+      }
+      return { cancelled: false };
+    });
+  }
+
   private createExtensionCommandContextActions(): ExtensionCommandContextActionsLike {
     return {
       waitForIdle: async () => {
         const agent = this.inner.agent as { waitForIdle?: () => Promise<void> };
         await agent.waitForIdle?.();
       },
-      newSession: async () => ({ cancelled: true }),
+      newSession: (options) => this.newSessionFromExtension(options),
       fork: async () => ({ cancelled: true }),
       navigateTree: (targetId, options) =>
         this.navigateTreeKeepingToolSelection(targetId, { summarize: options?.summarize }),
@@ -3722,6 +3776,7 @@ export async function startRpcSession(
     const { session: inner, modelFallbackMessage } = await createAgentSessionFromServices({
       services,
       sessionManager,
+      sessionStartEvent: options.sessionStartEvent,
       ...(startupModel ? { model: startupModel } : {}),
       ...(initial?.thinkingLevel ? { thinkingLevel: initial.thinkingLevel } : {}),
       ...(scope.scopedModels.length > 0 ? { scopedModels: [...scope.scopedModels] } : {}),
