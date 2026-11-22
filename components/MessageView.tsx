@@ -930,7 +930,7 @@ function AssistantMessageView({
           {unansweredTruncation && onCompact && (
             <button
               type="button"
-              onClick={onCompact}
+              onClick={() => onCompact()}
               disabled={isCompacting}
               style={{
                 display: "block",
