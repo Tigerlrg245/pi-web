@@ -25,17 +25,20 @@ type UsageResponse = { providerId: string; status: "ready" | "auth-unavailable" 
 
 const STORAGE_PREFIX = "pi-web:provider-usage:";
 
-export function ProviderUsageSummary({ providerId, enabled }: { providerId: string; enabled: boolean }) {
-  if (!isProviderUsageId(providerId)) return null;
-  return <ProviderUsageContent providerId={providerId} enabled={enabled} />;
+type SummaryProps = { providerId: string; enabled: boolean; onOpen?: boolean };
+
+export function ProviderUsageSummary(props: SummaryProps) {
+  if (!isProviderUsageId(props.providerId)) return null;
+  return <ProviderUsageContent {...props} />;
 }
 
-function ProviderUsageContent({ providerId, enabled }: { providerId: string; enabled: boolean }) {
+function ProviderUsageContent({ providerId, enabled, onOpen = false }: SummaryProps) {
   const [snapshot, setSnapshot] = useState<UsageResponse | null>(null);
   const [querying, setQuerying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [refreshDone, setRefreshDone] = useState(false);
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const requestRef = useRef<AbortController | null>(null);
   const { locale, t } = useI18n();
 
   useEffect(() => {
@@ -43,7 +46,7 @@ function ProviderUsageContent({ providerId, enabled }: { providerId: string; ena
     setRefreshDone(false);
     setSnapshot(null);
     try {
-      const cached = localStorage.getItem(`${STORAGE_PREFIX}${providerId}`);
+      const cached = onOpen ? null : localStorage.getItem(`${STORAGE_PREFIX}${providerId}`);
       if (cached) {
         const parsed = JSON.parse(cached) as UsageResponse;
         if (parsed?.status === "ready" && parsed.report && Array.isArray(parsed.report.buckets) && Array.isArray(parsed.report.metrics)) {
@@ -55,11 +58,15 @@ function ProviderUsageContent({ providerId, enabled }: { providerId: string; ena
     }
     setError(null);
     return () => {
+      requestRef.current?.abort();
       if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
     };
-  }, [providerId]);
+  }, [providerId, onOpen]);
 
   const query = useCallback(async () => {
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
     setQuerying(true);
     setError(null);
     try {
@@ -67,30 +74,43 @@ function ProviderUsageContent({ providerId, enabled }: { providerId: string; ena
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ providerId }),
+        signal: controller.signal,
       });
       const result = await response.json() as UsageResponse & { error?: string };
+      if (controller.signal.aborted) return;
       if (!response.ok) throw new Error(result.error ?? `HTTP ${response.status}`);
       if (result.status === "ready") {
         setSnapshot(result);
-        try { localStorage.setItem(`${STORAGE_PREFIX}${providerId}`, JSON.stringify(result)); } catch {}
+        if (!onOpen) {
+          try { localStorage.setItem(`${STORAGE_PREFIX}${providerId}`, JSON.stringify(result)); } catch {}
+        }
         setRefreshDone(true);
         if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
         refreshTimerRef.current = setTimeout(() => setRefreshDone(false), 2000);
       } else {
-        setError(result.message ?? t("providerUsage.queryFailed"));
+        if (onOpen) setSnapshot(null);
+        setError(onOpen && result.status === "auth-unavailable"
+          ? t("providerUsage.connectCodex")
+          : result.message ?? t("providerUsage.queryFailed"));
       }
     } catch (caught) {
+      if (controller.signal.aborted) return;
+      if (onOpen) setSnapshot(null);
       setError(caught instanceof Error ? caught.message : t("providerUsage.queryFailed"));
     } finally {
-      setQuerying(false);
+      if (!controller.signal.aborted) setQuerying(false);
     }
-  }, [providerId, t]);
+  }, [providerId, onOpen, t]);
+
+  useEffect(() => {
+    if (onOpen && enabled) void query();
+  }, [onOpen, enabled, query]);
 
   const report = snapshot?.status === "ready" ? snapshot.report : undefined;
   return (
     <section style={{ paddingTop: 10, display: "flex", flexDirection: "column", gap: 10 }}>
       <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-        <span style={{ fontSize: 13, color: "var(--text)", fontWeight: 600, lineHeight: 1.35 }}>{t("providerUsage.usage")}</span>
+        <span style={{ fontSize: 13, color: "var(--text)", fontWeight: 600, lineHeight: 1.35 }}>{t(onOpen ? "providerUsage.codex" : "providerUsage.usage")}</span>
         <button
           type="button"
           onClick={query}
@@ -117,11 +137,16 @@ function ProviderUsageContent({ providerId, enabled }: { providerId: string; ena
         )}
       </div>
 
-      {!report && !error && <span style={{ fontSize: 12, color: "var(--text-dim)" }}>{t("providerUsage.notQueried")}</span>}
+      {!report && !error && <span style={{ fontSize: 12, color: "var(--text-dim)" }}>{t(querying || onOpen ? "providerUsage.refreshing" : "providerUsage.notQueried")}</span>}
       {error && <span style={{ fontSize: 12, color: "#f87171" }}>{error}</span>}
+      {report && onOpen && report.buckets.length > 0 && (
+        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{t("providerUsage.remainingAndReset")}</span>
+      )}
       {report && (
-        <div style={{ display: "grid", gridTemplateColumns: "180px minmax(0, 1fr)", columnGap: 14, rowGap: 8, alignItems: "baseline", minWidth: 0, width: "min(100%, 420px)", maxWidth: "100%", fontSize: 12 }}>
-          {report.buckets.map((bucket) => (
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", columnGap: 14, rowGap: 8, alignItems: "baseline", minWidth: 0, width: "min(100%, 420px)", maxWidth: "100%", fontSize: 12 }}>
+          {(onOpen ? [...report.buckets].sort((a, b) =>
+            Number(b.windowMinutes === 10_080) - Number(a.windowMinutes === 10_080)
+          ) : report.buckets).map((bucket) => (
             <div key={bucket.id} style={{ display: "contents" }}>
               <span style={{ color: "var(--text-muted)", fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{bucket.groupLabel ? `${bucket.groupLabel} / ${bucket.label}` : bucket.label}</span>
               <span style={{ color: "var(--text)", fontFamily: "var(--font-mono)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{formatBucket(bucket, t("providerUsage.available"))}</span>

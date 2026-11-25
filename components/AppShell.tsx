@@ -16,6 +16,7 @@ import { ProjectTrustDialog, type ProjectTrustFailure } from "./ProjectTrustDial
 import { BranchNavigator, hasSessionBranches } from "./BranchNavigator";
 import { SystemPromptPanel } from "./SystemPromptPanel";
 import { ToolDefinitionsPanel } from "./ToolDefinitionsPanel";
+import { ProviderUsageSummary } from "./ProviderUsageSummary";
 import { AgentMiniStrip } from "./AgentMiniStrip";
 import { AgentSessionPanel } from "./AgentSessionPanel";
 import { DebugPanel, DebugPanelBoundary } from "./DebugPanel";
@@ -86,6 +87,7 @@ import { focusIfLost } from "@/lib/stacked-dialog";
 import { loadAgentStripLocked, saveAgentStripLocked } from "@/lib/agent-strip-lock";
 import { claimDoneChime } from "@/lib/done-chime";
 
+type TopPanel = "agents" | "branches" | "system" | "tools" | "usage" | "session" | "debug";
 type SessionCopyField = "file" | "id" | "projectDir" | "gitBranch" | "gitWorktree";
 type AutoNameStatus =
   | { kind: "idle" }
@@ -435,7 +437,7 @@ export function AppShell() {
   }, []);
 
   // Single active panel — only one dropdown open at a time
-  const [activeTopPanel, setActiveTopPanel] = useState<"agents" | "branches" | "system" | "tools" | "session" | "debug" | null>(null);
+  const [activeTopPanel, setActiveTopPanel] = useState<TopPanel | null>(null);
   const [topPanelPos, setTopPanelPos] = useState<{ top: number; left: number; width: number } | null>(null);
 
   useEffect(() => {
@@ -455,7 +457,7 @@ export function AppShell() {
   }, [rightPanelFullWidth]);
 
   const toggleTopPanel = useCallback((
-    panel: "agents" | "branches" | "system" | "tools" | "session" | "debug",
+    panel: TopPanel,
     keepMobileToolbarOpen = false,
   ) => {
     if (isMobile) setSidebarOpen(false);
@@ -2103,6 +2105,29 @@ export function AppShell() {
           </svg>
           {!mobile && <span>{translate("tools.label")}</span>}
         </button>
+        <button
+          type="button"
+          onClick={() => toggleTopPanel("usage", mobile)}
+          title={translate("providerUsage.codex")}
+          aria-label={translate("providerUsage.codex")}
+          aria-pressed={activeTopPanel === "usage"}
+          data-mobile-toolbar-action={mobile ? "usage" : undefined}
+          style={{
+            display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+            height: "100%", padding: mobile ? 0 : "0 12px",
+            width: mobile ? TOP_BAR_ICON_BUTTON_SIZE : undefined, flexShrink: 0,
+            background: activeTopPanel === "usage" ? "var(--bg-selected)" : "none",
+            border: "none", borderRight: "1px solid var(--border)",
+            borderTop: activeTopPanel === "usage" ? "2px solid var(--accent)" : "2px solid transparent",
+            color: activeTopPanel === "usage" ? "var(--text)" : "var(--text-muted)",
+            cursor: "pointer", fontSize: 11, whiteSpace: "nowrap",
+          }}
+        >
+          <svg width={mobile ? 16 : 12} height={mobile ? 16 : 12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+            <path d="M4 19h16M7 15v-4m5 4V5m5 10V8" />
+          </svg>
+          {!mobile && <span>{translate("providerUsage.usage")}</span>}
+        </button>
       </div>
     );
   };
@@ -2659,6 +2684,16 @@ export function AppShell() {
                   tools={systemTools}
                   translate={translate}
                 />
+              )}
+              {activeTopPanel === "usage" && (
+                <div className="session-info-popover" style={{
+                  background: "var(--bg-panel)",
+                  borderBottom: "1px solid var(--border)",
+                  boxShadow: "0 10px 28px rgba(0,0,0,0.10)",
+                  padding: "2px 16px 14px",
+                }}>
+                  <ProviderUsageSummary providerId="openai-codex" enabled onOpen />
+                </div>
               )}
               {activeTopPanel === "session" && (
                 <div className="session-info-popover" style={{
