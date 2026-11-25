@@ -107,6 +107,18 @@ function ProviderUsageContent({ providerId, enabled, onOpen = false }: SummaryPr
   }, [onOpen, enabled, query]);
 
   const report = snapshot?.status === "ready" ? snapshot.report : undefined;
+  const isCodex = providerId === "openai-codex";
+  const [now, setNow] = useState(() => Date.now());
+  const showCountdown = isCodex && Boolean(report?.buckets.some((bucket) => bucket.resetsAt));
+  useEffect(() => {
+    if (!showCountdown) return;
+    const tick = () => setNow(Date.now());
+    tick();
+    const timer = setInterval(tick, 30_000);
+    return () => clearInterval(timer);
+  }, [showCountdown]);
+
+  const bankedResets = isCodex ? report?.metrics.find((metric) => metric.id === "banked-resets") : undefined;
   return (
     <section style={{ paddingTop: 10, display: "flex", flexDirection: "column", gap: 10 }}>
       <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
@@ -149,10 +161,18 @@ function ProviderUsageContent({ providerId, enabled, onOpen = false }: SummaryPr
           ) : report.buckets).map((bucket) => (
             <div key={bucket.id} style={{ display: "contents" }}>
               <span style={{ color: "var(--text-muted)", fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{bucket.groupLabel ? `${bucket.groupLabel} / ${bucket.label}` : bucket.label}</span>
-              <span style={{ color: "var(--text)", fontFamily: "var(--font-mono)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{formatBucket(bucket, t("providerUsage.available"))}</span>
+              <span title={bucket.resetsAt ? formatReset(bucket.resetsAt) : undefined} style={{ color: "var(--text)", fontFamily: "var(--font-mono)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                {formatBucket(bucket, t("providerUsage.available"), isCodex && bucket.resetsAt
+                  ? formatCountdown(bucket.resetsAt, now, locale, t("providerUsage.resetTimePassed"))
+                  : undefined)}
+              </span>
             </div>
           ))}
-          {report.metrics.map((metric) => (
+          {isCodex && <div style={{ display: "contents" }}>
+            <span style={{ color: "var(--text-muted)" }}>{t("providerUsage.bankedResets")}</span>
+            <span style={{ color: "var(--text)" }}>{bankedResets ? formatMetric(bankedResets) : t("providerUsage.notReported")}</span>
+          </div>}
+          {report.metrics.filter((metric) => metric !== bankedResets).map((metric) => (
             <div key={metric.id} style={{ display: "contents" }}>
               <span style={{ color: "var(--text-muted)", fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{metric.label}</span>
               <span style={{ color: "var(--text)", fontFamily: "var(--font-mono)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{formatMetric(metric)}</span>
@@ -164,9 +184,9 @@ function ProviderUsageContent({ providerId, enabled, onOpen = false }: SummaryPr
   );
 }
 
-function formatBucket(bucket: UsageBucket, availableLabel: string): string {
+function formatBucket(bucket: UsageBucket, availableLabel: string, countdown?: string): string {
   if (bucket.unit === "percent" && bucket.remaining !== undefined) {
-    const reset = bucket.resetsAt ? ` / ${formatReset(bucket.resetsAt)}` : "";
+    const reset = bucket.resetsAt ? ` / ${countdown ?? formatReset(bucket.resetsAt)}` : "";
     return `${Math.round(bucket.remaining)}%${reset}`;
   }
   if (bucket.unit === "currency") return `${bucket.currency === "CNY" ? "CNY " : "$"}${formatAmount(bucket.remaining ?? bucket.limit)}`;
@@ -181,6 +201,19 @@ function formatMetric(metric: UsageMetric): string {
 
 function formatAmount(value: number | undefined): string {
   return value === undefined ? "-" : Number.isInteger(value) ? String(value) : value.toFixed(2);
+}
+
+function formatCountdown(resetSeconds: number, now: number, locale: string, passedLabel: string): string {
+  const remaining = resetSeconds - now / 1_000;
+  if (remaining <= 0) return passedLabel;
+  const minutes = Math.ceil(remaining / 60);
+  const days = Math.floor(minutes / 1_440);
+  const hours = Math.floor(minutes / 60) % 24;
+  const part = (amount: number, unit: "day" | "hour" | "minute") =>
+    new Intl.NumberFormat(locale, { style: "unit", unit, unitDisplay: "narrow" }).format(amount);
+  if (days > 0) return `${part(days, "day")} ${part(hours, "hour")}`;
+  if (hours > 0) return `${part(hours, "hour")} ${part(minutes % 60, "minute")}`;
+  return part(minutes, "minute");
 }
 
 function formatReset(seconds: number): string {

@@ -205,7 +205,11 @@ function normalizeCodex(payload: Record<string, unknown>, capturedAt: number): U
   const credits = record(payload.credits);
   if (credits?.unlimited === true) metrics.push({ id: "credits", label: "Credits", value: "Unlimited" });
   else if (number(credits?.balance) !== undefined) metrics.push({ id: "credits", label: "Credits", value: number(credits?.balance)!, unit: "count" });
-  if (!buckets.length && !metrics.length) throw new Error("Codex returned no usage data.");
+  const availableResets = nonnegativeInteger(record(payload.rate_limit_reset_credits)?.available_count);
+  if (!buckets.length && !metrics.length && availableResets === undefined) throw new Error("Codex returned no usage data.");
+  if (availableResets !== undefined) {
+    metrics.push({ id: "banked-resets", label: "Banked resets", value: availableResets, unit: "count" });
+  }
   return { providerId: "openai-codex", providerName: PROVIDER_NAMES["openai-codex"], capturedAt, buckets, metrics };
 }
 
