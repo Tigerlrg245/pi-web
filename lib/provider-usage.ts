@@ -37,6 +37,7 @@ export interface UsageReport {
   buckets: UsageBucket[];
   metrics: UsageMetric[];
   notes?: string[];
+  resetCredits?: { availableCount: number; expirations: Array<number | null> };
 }
 
 export type ProviderUsageResult =
@@ -97,12 +98,17 @@ export async function queryProviderUsage(providerId: ProviderUsageId): Promise<P
 
   try {
     const payload = await fetchJson(providerId, resolved.auth);
-    const capturedAt = Date.now();
-    return {
-      providerId,
-      status: "ready",
-      report: normalize(providerId, payload, capturedAt),
-    };
+    const report = normalize(providerId, payload, Date.now());
+    if (providerId === "openai-codex" && report.resetCredits?.availableCount !== 0 &&
+        (!report.resetCredits || report.resetCredits.expirations.length < report.resetCredits.availableCount)) {
+      try {
+        const details = await fetchJson(providerId, resolved.auth, true);
+        report.resetCredits = readCodexResetCredits(details) ?? report.resetCredits;
+      } catch {
+        // The optional detail lookup must not hide a usable quota or count.
+      }
+    }
+    return { providerId, status: "ready", report };
   } catch {
     return { providerId, status: "query-failed", message: "The provider usage query failed." };
   }
@@ -112,7 +118,7 @@ async function fetchJson(providerId: ProviderUsageId, auth: {
   apiKey?: string;
   headers?: Record<string, string | null>;
   baseUrl?: string;
-}): Promise<Record<string, unknown>> {
+}, codexResetDetails = false): Promise<Record<string, unknown>> {
   if (auth.baseUrl && !isOfficialProviderUsageOrigin(providerId, auth.baseUrl)) {
     throw new Error("A custom provider origin cannot be used for official usage queries.");
   }
@@ -122,7 +128,9 @@ async function fetchJson(providerId: ProviderUsageId, auth: {
   }
   if (!headers.has("authorization") && auth.apiKey) headers.set("Authorization", `Bearer ${auth.apiKey}`);
 
-  let endpoint = ENDPOINTS[providerId];
+  let endpoint = codexResetDetails && providerId === "openai-codex"
+    ? "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
+    : ENDPOINTS[providerId];
   if (providerId === "minimax" || providerId === "minimax-cn") {
     const token = bearerToken(headers.get("authorization")) ?? auth.apiKey;
     endpoint += token?.startsWith("sk-api-") ? "/account/query_balance" : "/v1/token_plan/remains";
@@ -130,7 +138,7 @@ async function fetchJson(providerId: ProviderUsageId, auth: {
   const response = await fetch(endpoint, {
     headers,
     redirect: "error",
-    signal: AbortSignal.timeout(15_000),
+    signal: AbortSignal.timeout(codexResetDetails ? 5_000 : 15_000),
   });
   const body = await response.text();
   if (body.length > 65_536) throw new Error("Usage response was too large.");
@@ -205,12 +213,26 @@ function normalizeCodex(payload: Record<string, unknown>, capturedAt: number): U
   const credits = record(payload.credits);
   if (credits?.unlimited === true) metrics.push({ id: "credits", label: "Credits", value: "Unlimited" });
   else if (number(credits?.balance) !== undefined) metrics.push({ id: "credits", label: "Credits", value: number(credits?.balance)!, unit: "count" });
-  const availableResets = nonnegativeInteger(record(payload.rate_limit_reset_credits)?.available_count);
-  if (!buckets.length && !metrics.length && availableResets === undefined) throw new Error("Codex returned no usage data.");
-  if (availableResets !== undefined) {
-    metrics.push({ id: "banked-resets", label: "Banked resets", value: availableResets, unit: "count" });
+  const resetCredits = readCodexResetCredits(record(payload.rate_limit_reset_credits));
+  if (!buckets.length && !metrics.length && !resetCredits) throw new Error("Codex returned no usage data.");
+  return { providerId: "openai-codex", providerName: PROVIDER_NAMES["openai-codex"], capturedAt, buckets, metrics,
+    ...(resetCredits ? { resetCredits } : {}) };
+}
+
+function readCodexResetCredits(payload: Record<string, unknown> | undefined): UsageReport["resetCredits"] {
+  const availableCount = nonnegativeInteger(payload?.available_count);
+  if (availableCount === undefined) return undefined;
+  const expirations: Array<number | null> = [];
+  for (const raw of Array.isArray(payload?.credits) ? payload.credits : []) {
+    const credit = record(raw);
+    if (credit?.status !== "available") continue;
+    const expiry = credit.expires_at === null ? null : epochSeconds(credit.expires_at);
+    if (expiry !== undefined && (expiry === null || (expiry > 0 && expiry <= 253_402_300_799))) {
+      expirations.push(expiry);
+    }
   }
-  return { providerId: "openai-codex", providerName: PROVIDER_NAMES["openai-codex"], capturedAt, buckets, metrics };
+  expirations.sort((a, b) => (a ?? Infinity) - (b ?? Infinity));
+  return { availableCount, expirations: expirations.slice(0, availableCount) };
 }
 
 function normalizeDeepSeek(payload: Record<string, unknown>, capturedAt: number): UsageReport {

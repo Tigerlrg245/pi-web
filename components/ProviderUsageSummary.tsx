@@ -20,7 +20,7 @@ type UsageBucket = {
 };
 
 type UsageMetric = { id: string; label: string; value: number | string; unit?: string; currency?: string };
-type UsageReport = { capturedAt: number; buckets: UsageBucket[]; metrics: UsageMetric[]; notes?: string[] };
+type UsageReport = { capturedAt: number; buckets: UsageBucket[]; metrics: UsageMetric[]; notes?: string[]; resetCredits?: { availableCount: number; expirations: Array<number | null> } };
 type UsageResponse = { providerId: string; status: "ready" | "auth-unavailable" | "query-failed"; report?: UsageReport; message?: string };
 
 const STORAGE_PREFIX = "pi-web:provider-usage:";
@@ -118,7 +118,11 @@ function ProviderUsageContent({ providerId, enabled, onOpen = false }: SummaryPr
     return () => clearInterval(timer);
   }, [showCountdown]);
 
-  const bankedResets = isCodex ? report?.metrics.find((metric) => metric.id === "banked-resets") : undefined;
+  const bankedCount = report?.resetCredits?.availableCount ?? report?.metrics.find((metric) => metric.id === "banked-resets")?.value;
+  const expirations = report?.resetCredits?.expirations ?? [];
+  const buckets = onOpen ? [...(report?.buckets ?? [])].sort((a, b) =>
+    Number(b.windowMinutes === 10_080) - Number(a.windowMinutes === 10_080)
+  ) : report?.buckets;
   return (
     <section style={{ paddingTop: 10, display: "flex", flexDirection: "column", gap: 10 }}>
       <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
@@ -151,28 +155,47 @@ function ProviderUsageContent({ providerId, enabled, onOpen = false }: SummaryPr
 
       {!report && !error && <span style={{ fontSize: 12, color: "var(--text-dim)" }}>{t(querying || onOpen ? "providerUsage.refreshing" : "providerUsage.notQueried")}</span>}
       {error && <span style={{ fontSize: 12, color: "#f87171" }}>{error}</span>}
-      {report && onOpen && report.buckets.length > 0 && (
-        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{t("providerUsage.remainingAndReset")}</span>
+      {report && isCodex && (
+        <div style={{ display: "flex", gap: "16px 32px", flexWrap: "wrap", alignItems: "flex-start", fontSize: 12 }}>
+          <div style={{ flex: "1 1 380px", minWidth: 0, display: "grid", gap: 8 }}>
+            {!!buckets?.length && <span style={{ color: "var(--text-muted)" }}>{t("providerUsage.remainingAndReset")}</span>}
+            {buckets?.map((bucket) => (
+              <div key={bucket.id} style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: "4px 14px" }}>
+                <span style={{ color: "var(--text-muted)" }}>{bucket.groupLabel ? `${bucket.groupLabel} / ${bucket.label}` : bucket.label}</span>
+                <strong>{formatBucket(bucket, t("providerUsage.available"), false)}</strong>
+                {!!bucket.resetsAt && <>
+                  <span>{formatCountdown(bucket.resetsAt, now, locale, t("providerUsage.resetTimePassed"))}</span>
+                  <span style={{ color: "var(--text-muted)" }}>{formatExactTime(bucket.resetsAt, locale)}</span>
+                </>}
+              </div>
+            ))}
+            {report.metrics.filter((metric) => metric.id !== "banked-resets").map((metric) => (
+              <span key={metric.id} style={{ color: "var(--text-muted)" }}>{metric.label} · {formatMetric(metric)}</span>
+            ))}
+          </div>
+          <div style={{ flex: "1 1 300px", minWidth: 0, display: "grid", gap: 8 }}>
+            <strong>{t("providerUsage.bankedResets")} · {bankedCount ?? t("providerUsage.notReported")}</strong>
+            {!!expirations.length && <div style={{ display: "flex", gap: "6px 18px", flexWrap: "wrap" }}>
+              {expirations.map((expiry, index) => (
+                <span key={index} style={{ color: "var(--text-muted)" }}>
+                  {expiry === null ? t("providerUsage.noExpiry") : t("providerUsage.expires", { time: formatExactTime(expiry, locale) })}
+                </span>
+              ))}
+            </div>}
+            {typeof bankedCount === "number" && bankedCount > expirations.length &&
+              <span style={{ color: "var(--text-muted)" }}>{t("providerUsage.expiriesNotReported", { count: String(bankedCount - expirations.length) })}</span>}
+          </div>
+        </div>
       )}
-      {report && (
+      {report && !isCodex && (
         <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", columnGap: 14, rowGap: 8, alignItems: "baseline", minWidth: 0, width: "min(100%, 420px)", maxWidth: "100%", fontSize: 12 }}>
-          {(onOpen ? [...report.buckets].sort((a, b) =>
-            Number(b.windowMinutes === 10_080) - Number(a.windowMinutes === 10_080)
-          ) : report.buckets).map((bucket) => (
+          {report.buckets.map((bucket) => (
             <div key={bucket.id} style={{ display: "contents" }}>
               <span style={{ color: "var(--text-muted)", fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{bucket.groupLabel ? `${bucket.groupLabel} / ${bucket.label}` : bucket.label}</span>
-              <span title={bucket.resetsAt ? formatReset(bucket.resetsAt) : undefined} style={{ color: "var(--text)", fontFamily: "var(--font-mono)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                {formatBucket(bucket, t("providerUsage.available"), isCodex && bucket.resetsAt
-                  ? formatCountdown(bucket.resetsAt, now, locale, t("providerUsage.resetTimePassed"))
-                  : undefined)}
-              </span>
+              <span style={{ color: "var(--text)", fontFamily: "var(--font-mono)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{formatBucket(bucket, t("providerUsage.available"))}</span>
             </div>
           ))}
-          {isCodex && <div style={{ display: "contents" }}>
-            <span style={{ color: "var(--text-muted)" }}>{t("providerUsage.bankedResets")}</span>
-            <span style={{ color: "var(--text)" }}>{bankedResets ? formatMetric(bankedResets) : t("providerUsage.notReported")}</span>
-          </div>}
-          {report.metrics.filter((metric) => metric !== bankedResets).map((metric) => (
+          {report.metrics.map((metric) => (
             <div key={metric.id} style={{ display: "contents" }}>
               <span style={{ color: "var(--text-muted)", fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{metric.label}</span>
               <span style={{ color: "var(--text)", fontFamily: "var(--font-mono)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{formatMetric(metric)}</span>
@@ -184,9 +207,9 @@ function ProviderUsageContent({ providerId, enabled, onOpen = false }: SummaryPr
   );
 }
 
-function formatBucket(bucket: UsageBucket, availableLabel: string, countdown?: string): string {
+function formatBucket(bucket: UsageBucket, availableLabel: string, showReset = true): string {
   if (bucket.unit === "percent" && bucket.remaining !== undefined) {
-    const reset = bucket.resetsAt ? ` / ${countdown ?? formatReset(bucket.resetsAt)}` : "";
+    const reset = showReset && bucket.resetsAt ? ` / ${formatReset(bucket.resetsAt)}` : "";
     return `${Math.round(bucket.remaining)}%${reset}`;
   }
   if (bucket.unit === "currency") return `${bucket.currency === "CNY" ? "CNY " : "$"}${formatAmount(bucket.remaining ?? bucket.limit)}`;
@@ -214,6 +237,12 @@ function formatCountdown(resetSeconds: number, now: number, locale: string, pass
   if (days > 0) return `${part(days, "day")} ${part(hours, "hour")}`;
   if (hours > 0) return `${part(hours, "hour")} ${part(minutes % 60, "minute")}`;
   return part(minutes, "minute");
+}
+
+function formatExactTime(seconds: number, locale: string): string {
+  return new Date(seconds * 1_000).toLocaleString(locale, {
+    year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short",
+  });
 }
 
 function formatReset(seconds: number): string {

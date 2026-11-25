@@ -14,9 +14,10 @@ The model selector stays usable while a run streams too, as pi's TUI keeps Ctrl+
 The Beast fork's Usage button beside Tools opens the existing provider-usage
 summary against `openai-codex`. It fetches on open and on manual refresh, not
 while closed, and prioritizes the seven-day window when returned. Reset times
-count down locally; the exact timestamp remains in the tooltip. Banked resets
-are the Codex usage response's available count (including zero); if it is not
-provided, report that rather than guessing. There is no redemption action. This view
+count down locally alongside the exact reset date and time. Banked resets show
+the available count and per-credit expirations from Codex, using a read-only
+detail lookup with the same account if the usage response omits them. Missing
+dates are identified explicitly; there is no redemption action. This view
 does not reuse browser-cached results across account changes. Connect the
 **ChatGPT Plus/Pro (legacy)** OAuth provider in Models to use it; connecting
 does not require changing the active model. The server's existing fixed,
