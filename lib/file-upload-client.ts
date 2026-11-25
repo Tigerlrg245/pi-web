@@ -11,6 +11,7 @@ export interface UploadError {
 
 export interface UploadResponse {
   uploaded?: string[];
+  relativeDirectory?: string;
   skipped?: string[];
   errors?: UploadError[];
   conflicts?: string[];
@@ -24,6 +25,7 @@ export interface UploadResponse {
  * @param files The files, written under their own names
  * @param strategy What the server does with a name that already exists
  * @param onProgress Upload progress in percent, when the browser reports it
+ * @param destination Chat uploads get a fresh batch folder inside the workspace inbox
  * @returns The HTTP status and the parsed response body
  */
 export function uploadFiles(
@@ -31,6 +33,7 @@ export function uploadFiles(
   files: File[],
   strategy: UploadConflictStrategy,
   onProgress?: (progress: number) => void,
+  destination: "directory" | "chat" = "directory",
 ): Promise<{ status: number; data: UploadResponse }> {
   return new Promise((resolve, reject) => {
     const formData = new FormData();
@@ -39,7 +42,7 @@ export function uploadFiles(
     const xhr = new XMLHttpRequest();
     xhr.open(
       "POST",
-      `/api/files/${encodeFilePathForApi(targetDirectory)}?type=upload&conflict=${strategy}`,
+      `/api/files/${encodeFilePathForApi(targetDirectory)}?type=${destination === "chat" ? "chat-upload" : "upload"}&conflict=${strategy}`,
     );
     xhr.upload.onprogress = (event) => {
       if (onProgress && event.lengthComputable && event.total > 0) {
@@ -66,7 +69,7 @@ export type DroppedItem = { kind: "file"; file: File } | { kind: "folder"; name:
 
 /**
  * Sorts a chat drop: images are attached to the prompt as before, other files
- * are uploaded into the working directory and mentioned, and folders are left
+ * are uploaded into the chat inbox and mentioned, and folders are left
  * out because the upload endpoint takes files only.
  * @param items The dropped items, in drop order
  * @returns The images, the files to upload, and the names of skipped folders
@@ -84,15 +87,16 @@ export function splitDroppedItems(items: DroppedItem[]): { images: File[]; files
 }
 
 /**
- * The `@` mentions for files now in the working directory, in drop order.
+ * The `@` mentions for uploaded files, in drop order.
  * @param files The dropped files
- * @param present Names the upload reports as written or already there
+ * @param present Names to include in the composer
+ * @param relativeDirectory Workspace-relative destination prefix, if any
  * @returns Mentions ready to insert, or an empty string
  */
-export function dropMentionText(files: File[], present: string[]): string {
+export function dropMentionText(files: File[], present: string[], relativeDirectory = ""): string {
   const names = new Set(present);
   return files
     .filter((file) => names.has(file.name))
-    .map((file) => buildAtMentionText(file.name, false))
+    .map((file) => buildAtMentionText(relativeDirectory ? `${relativeDirectory}/${file.name}` : file.name, false))
     .join("");
 }

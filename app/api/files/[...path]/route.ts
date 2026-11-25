@@ -43,6 +43,7 @@ const FILE_REQUEST_TYPE_SET = new Set<string>(FILE_REQUEST_TYPES);
 const MAX_UPLOAD_TOTAL_BYTES = 100 * 1024 * 1024;
 // Multipart boundaries and headers are not file bytes, but must be bounded too.
 const MAX_UPLOAD_REQUEST_BYTES = MAX_UPLOAD_TOTAL_BYTES + 1024 * 1024;
+const CHAT_INBOX = ".pi-chat-inbox";
 
 // The source view highlights every language here but text, pdf and word with
 // the Prism grammar of that name (refractor/all); a name it lacks renders
@@ -167,7 +168,7 @@ export async function POST(
 
     const uploadDirectory = await getUploadDirectory(segments);
     if ("response" in uploadDirectory) return uploadDirectory.response;
-    const { directory } = uploadDirectory;
+    let { directory } = uploadDirectory;
 
     if (type === "upload-check") {
       const body = await request.json().catch(() => null) as { fileNames?: unknown } | null;
@@ -182,11 +183,12 @@ export async function POST(
       return NextResponse.json(inspectUploadTargets(directory, fileNames));
     }
 
-    if (type !== "upload") {
+    const chatUpload = type === "chat-upload";
+    if (type !== "upload" && !chatUpload) {
       return NextResponse.json({ error: "Invalid upload request type" }, { status: 400 });
     }
 
-    const strategy = parseUploadConflictStrategy(request.nextUrl.searchParams.get("conflict"));
+    const strategy = chatUpload ? "error" : parseUploadConflictStrategy(request.nextUrl.searchParams.get("conflict"));
     if (!strategy) {
       return NextResponse.json({ error: "Invalid conflict strategy" }, { status: 400 });
     }
@@ -208,6 +210,22 @@ export async function POST(
     const validationError = validateUploadFileNames(fileNames);
     if (validationError) {
       return NextResponse.json({ error: validationError }, { status: 400 });
+    }
+
+    let relativeDirectory: string | undefined;
+    if (chatUpload) {
+      const inbox = path.join(directory, CHAT_INBOX);
+      try {
+        await fs.promises.mkdir(inbox, { mode: 0o700 });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      }
+      const stat = await fs.promises.lstat(inbox);
+      if (!stat.isDirectory() || stat.isSymbolicLink() || !samePath(await fs.promises.realpath(inbox), inbox)) {
+        return NextResponse.json({ error: "Chat inbox must be a real directory inside the workspace" }, { status: 403 });
+      }
+      directory = await fs.promises.mkdtemp(path.join(inbox, "upload-"));
+      relativeDirectory = `${CHAT_INBOX}/${path.basename(directory)}`;
     }
 
     const inspection = inspectUploadTargets(directory, fileNames);
@@ -250,7 +268,7 @@ export async function POST(
         if (conflictSet.has(file.name)) {
           await replaceUploadFile(destination, bytes);
         } else {
-          await fs.promises.writeFile(destination, bytes, { flag: "wx" });
+          await fs.promises.writeFile(destination, bytes, { flag: "wx", ...(chatUpload ? { mode: 0o600 } : {}) });
         }
         uploaded.push(file.name);
       } catch (error) {
@@ -259,7 +277,7 @@ export async function POST(
     }
 
     return NextResponse.json(
-      { uploaded, skipped, errors },
+      { uploaded, skipped, errors, relativeDirectory },
       { status: errors.length > 0 ? 207 : 200 },
     );
   } catch (error) {

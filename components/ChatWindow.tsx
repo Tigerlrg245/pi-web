@@ -766,10 +766,9 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
   }, [ctxKey, onContextUsageChange]);
   useEffect(() => () => { onContextUsageChange?.(null); }, [onContextUsageChange]);
 
-  // Images attach to the prompt. Other files go through the file explorer's
-  // upload into the working directory, never replacing a file already there,
-  // and come back as @mentions. The composer's attach button takes the same
-  // path, for phones that cannot drop files.
+  // Images attach to the prompt. Other files go into a fresh chat inbox
+  // batch and come back as workspace-relative @mentions. The composer's
+  // attach button takes the same path as drag and drop.
   const uploadDroppedFiles = useCallback(async (files: File[]) => {
     const cwd = session?.cwd ?? newSessionCwd;
     if (!cwd) {
@@ -777,18 +776,15 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
       return;
     }
     try {
-      const { status, data } = await uploadFiles(cwd, files, "skip");
+      const { status, data } = await uploadFiles(cwd, files, "error", undefined, "chat");
       if (status !== 200 && status !== 207) throw new Error(data.error ?? `HTTP ${status}`);
       const uploaded = data.uploaded ?? [];
-      const skipped = data.skipped ?? [];
-      const mentions = dropMentionText(files, [...uploaded, ...skipped]);
+      if (uploaded.length > 0 && !data.relativeDirectory) throw new Error("Missing chat inbox path");
+      const mentions = dropMentionText(files, uploaded, data.relativeDirectory);
       if (mentions) chatInputRef?.current?.insertText(mentions);
       if (uploaded.length > 0) {
         addNotice({ type: "success", message: t("chat.dropUploaded", { count: uploaded.length }) });
         onFilesUploaded?.();
-      }
-      if (skipped.length > 0) {
-        addNotice({ type: "warning", message: t("chat.dropAlreadyExists", { names: skipped.join(", ") }) });
       }
       for (const failure of data.errors ?? []) {
         addNotice({ type: "error", message: t("chat.dropFailed", { message: `${failure.name}: ${failure.error}` }) });

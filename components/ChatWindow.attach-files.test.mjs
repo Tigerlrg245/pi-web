@@ -45,8 +45,8 @@ async function attach(files, { cwd = "/project", response } = {}) {
     onFilesUploaded: () => { calls.refreshed += 1; },
     splitDroppedItems,
     dropMentionText,
-    uploadFiles: async (target, uploads, strategy) => {
-      calls.uploads.push([target, uploads.map((file) => file.name), strategy]);
+    uploadFiles: async (target, uploads, strategy, _progress, destination) => {
+      calls.uploads.push([target, uploads.map((file) => file.name), strategy, destination]);
       return response;
     },
   };
@@ -59,15 +59,15 @@ async function attach(files, { cwd = "/project", response } = {}) {
 
 test("the attach button sends picked files down the chat drop path (#1101)", async () => {
   const mixed = await attach([photo, report, log], {
-    response: { status: 207, data: { uploaded: ["report.pdf"], skipped: ["server.log"] } },
+    response: { status: 207, data: { uploaded: ["report.pdf"], relativeDirectory: ".pi-chat-inbox/upload-abc123", errors: [{ name: "server.log", error: "write failed" }] } },
   });
   // Images attach to the prompt; the rest are uploaded like a drop: never replacing a file, then mentioned.
   assert.deepEqual(mixed.images, [photo]);
-  assert.deepEqual(mixed.uploads, [["/project", ["report.pdf", "server.log"], "skip"]]);
-  assert.deepEqual(mixed.mentions, ["@report.pdf @server.log "]);
+  assert.deepEqual(mixed.uploads, [["/project", ["report.pdf", "server.log"], "error", "chat"]]);
+  assert.deepEqual(mixed.mentions, ["@.pi-chat-inbox/upload-abc123/report.pdf "]);
   assert.deepEqual(mixed.notices, [
     ["success", 'chat.dropUploaded {"count":1}'],
-    ["warning", 'chat.dropAlreadyExists {"names":"server.log"}'],
+    ["error", 'chat.dropFailed {"message":"server.log: write failed"}'],
   ]);
   assert.equal(mixed.refreshed, 1);
 
