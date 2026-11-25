@@ -4,7 +4,9 @@ import {
   getAwaitingInputRpcSessionIds,
   getCompletionNotificationSuppressedRpcSessionIds,
   getRunningRpcSessionIds,
+  getTelegramBridgeSessionId,
 } from "@/lib/rpc-manager";
+import { telegramBridgeEnabled } from "@/lib/telegram-bridge";
 import { getSessionUiStateRevision } from "@/lib/session-ui-state";
 import { getSessionIdsWithUnsettledSubagentRuns } from "@/lib/subagent-runtime";
 
@@ -22,6 +24,7 @@ export async function GET() {
     {
       sessionListVersion: getSessionListVersion(),
       runningSessionIds: getRunningRpcSessionIds(),
+      ...(telegramBridgeEnabled() ? { telegramBridgeSessionId: getTelegramBridgeSessionId() } : {}),
       awaitingInputSessionIds: getAwaitingInputRpcSessionIds(),
       completionNotificationSuppressedSessionIds: getCompletionNotificationSuppressedRpcSessionIds(),
       subagentsActiveSessionIds: getSessionIdsWithUnsettledSubagentRuns(),

@@ -338,6 +338,11 @@ a.session-tree-main {
   white-space: pre;
 }
 
+.session-tree-telegram {
+  flex: none;
+  color: var(--accent);
+}
+
 /* Meta, in the rows' own type: a worktree's branch after its icon. */
 .session-tree-branch {
   flex: none;

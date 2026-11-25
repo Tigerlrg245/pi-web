@@ -1,4 +1,5 @@
 import type {
+  AgentSession,
   AgentSessionEvent,
   BashOperations,
   SessionManager,
@@ -92,6 +93,8 @@ interface ResourceLoaderLike {
 }
 
 interface ExtensionRunnerLike {
+  getCommand?: AgentSession["extensionRunner"]["getCommand"];
+  createCommandContext?: AgentSession["extensionRunner"]["createCommandContext"];
   getRegisteredCommands(): Array<{
     invocationName: string;
     description?: string;

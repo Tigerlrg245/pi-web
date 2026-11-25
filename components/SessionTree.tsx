@@ -39,6 +39,7 @@ import type { SidebarMenuAnchor } from "./SidebarMenu";
 import {
   ArchiveIcon,
   BranchIcon,
+  TelegramIcon,
   ChevronIcon,
   FolderPlusIcon,
   MoreIcon,
@@ -109,6 +110,7 @@ export interface SessionTreeProps {
   confirmDeleteRootId: string | null;
   /** Row whose menu is open: kept mounted, its ⋯ shown pressed. A group row's key works too. */
   activeMenuRowKey: string | null;
+  telegramBridgeSessionId?: string | null;
   onSelectFamily(family: SessionFamily): void;
   /** `all` (Alt+click): every group follows this one. */
   onToggleGroup(projectKey: string, all: boolean): void;
@@ -445,6 +447,7 @@ export function SessionTree(props: SessionTreeProps): ReactNode {
                     renaming={row.family.root.id === renamingRootId}
                     confirming={row.family.root.id === confirmDeleteRootId}
                     menuOpen={menuOpen}
+                    telegramConnected={row.family.root.id === props.telegramBridgeSessionId}
                     handlers={handlersRef}
                   />
                 );
@@ -507,6 +510,7 @@ const SessionRowView = memo(function SessionRowView({
   renaming,
   confirming,
   menuOpen,
+  telegramConnected,
   handlers,
 }: {
   row: SessionRow;
@@ -517,6 +521,7 @@ const SessionRowView = memo(function SessionRowView({
   renaming: boolean;
   confirming: boolean;
   menuOpen: boolean;
+  telegramConnected: boolean;
   handlers: Handlers;
 }) {
   const { locale, t } = useI18n();
@@ -627,6 +632,11 @@ const SessionRowView = memo(function SessionRowView({
         </span>
       ) : (
         <span className="session-tree-title">{title}</span>
+      )}
+      {telegramConnected && (
+        <span className="session-tree-telegram" title={t("sidebar.telegramConnected")}>
+          <TelegramIcon label={t("sidebar.telegramConnected")} />
+        </span>
       )}
       {branch && (
         <span className="session-tree-branch">

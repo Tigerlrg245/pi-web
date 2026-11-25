@@ -3,6 +3,7 @@ import { resolveSessionPath } from "@/lib/session-reader";
 import { startRpcSession, getRpcSession, setRpcSessionTools } from "@/lib/rpc-manager";
 import { cwdMissingBody, missingCwdFromBody } from "@/lib/missing-cwd";
 import { EXTENSION_REPORTED_CODE } from "@/lib/agent-client";
+import { telegramBridgeEnabled } from "@/lib/telegram-bridge";
 
 // POST /api/agent/[id] - Send a command to an existing session
 export async function POST(
@@ -16,6 +17,9 @@ export async function POST(
   try {
     const body = await req.json() as { type: string; [key: string]: unknown };
     commandType = typeof body.type === "string" ? body.type : undefined;
+    if (body.type === "assign_telegram" && !telegramBridgeEnabled()) {
+      return NextResponse.json({ error: "Telegram assignment is disabled" }, { status: 404 });
+    }
     const requestedToolNames = body.toolNames;
     if (
       requestedToolNames !== undefined

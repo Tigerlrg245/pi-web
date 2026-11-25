@@ -26,6 +26,7 @@ import { computeLiveSessionTotalActiveMs } from "./session-timing";
 import { getProjectTrustStatus, projectTrustReloadOptions } from "./project-trust";
 import { notifySessionComplete } from "./web-push";
 import { hasActiveSessionLivenessProvider } from "./session-liveness";
+import { isClassicTelegramConnected, rememberTelegramSession, telegramBridgeEnabled, TELEGRAM_CONNECT_COMMAND } from "./telegram-bridge";
 import type { AgentSession, ExtensionCommandContext, SessionShutdownEvent, SessionStartEvent, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import type { AgentSessionLike, ExtensionUiContextLike, ToolInfo } from "./pi-types";
 import type {
@@ -1071,7 +1072,8 @@ export class AgentSessionWrapper {
     return type === "prompt"
       || type === "steer"
       || type === "follow_up"
-      || type === "get_commands";
+      || type === "get_commands"
+      || type === "assign_telegram";
   }
 
   private async withFinalIdleReset<T>(operation: () => Promise<T>): Promise<T> {
@@ -1212,7 +1214,8 @@ export class AgentSessionWrapper {
       this.idleDeadlineAt = null;
       // A subagent run that waits for a slot (or its MCP servers) holds this SDK session and will
       // prompt it: disposing it now would leave that run on a dead session that records nothing (#1590).
-      if (!this.forceShutdownOnIdle && (this.isRunning() || getLiveSubagentStatus(this.sessionId) !== undefined || hasActiveSessionLivenessProvider({
+      if (!this.forceShutdownOnIdle && (this.isRunning() || getLiveSubagentStatus(this.sessionId) !== undefined
+        || (telegramBridgeEnabled() && this.hasClassicTelegramBridge()) || hasActiveSessionLivenessProvider({
         sessionId: this.sessionId,
         sessionFile: this.sessionFile || undefined,
       }))) {
@@ -1364,6 +1367,25 @@ export class AgentSessionWrapper {
       }
 
       switch (type) {
+      case "assign_telegram": {
+        if (!telegramBridgeEnabled() || this.sideChat || !this.isAlive() || !this.sessionFile || !existsSync(this.sessionFile)) {
+          throw new Error("Telegram assignment is unavailable for this session");
+        }
+        if (!existsSync(this.cwd)) throw cwdMissingError(this.cwd);
+        const runner = this.inner.extensionRunner;
+        const connect = runner.getCommand?.(TELEGRAM_CONNECT_COMMAND);
+        if (!connect || !runner.createCommandContext
+          || !connect.sourceInfo.path.replaceAll("\\", "/").includes("/@llblab/pi-telegram/")) {
+          throw new Error("The pi-telegram extension is not loaded in this session");
+        }
+        // Dispatch only the real extension command, never a model prompt.
+        // Its native confirmation fences the exact owner and is replayed on SSE.
+        this.renewExtensionUiStop();
+        if (!this.hasClassicTelegramBridge()) await connect.handler("", runner.createCommandContext());
+        const connected = this.hasClassicTelegramBridge();
+        if (connected) rememberTelegramSession(this.sessionId);
+        return { connected };
+      }
       case "prompt": {
         // Serialize only admission. Once the preceding prompt has either
         // passed or failed preflight, the SDK can atomically decide whether
@@ -2171,6 +2193,10 @@ export class AgentSessionWrapper {
     pending.resolve(response);
   }
 
+  hasClassicTelegramBridge(): boolean {
+    return this.isAlive() && isClassicTelegramConnected(this.extensionStatuses.get("telegram"));
+  }
+
   private getExtensionStatuses(): Array<{ key: string; text: string }> {
     return Array.from(this.extensionStatuses, ([key, text]) => ({ key, text }));
   }
@@ -2612,8 +2638,17 @@ export class AgentSessionWrapper {
       },
       onTerminalInput: () => () => {},
       setStatus: (key, text) => {
+        const gainedTelegram = key === "telegram" && telegramBridgeEnabled()
+          && !this.hasClassicTelegramBridge() && isClassicTelegramConnected(text);
         if (text === undefined) this.extensionStatuses.delete(key);
         else this.extensionStatuses.set(key, text);
+        if (gainedTelegram && this.isAlive() && this.sessionFile && existsSync(this.sessionFile)) {
+          try {
+            rememberTelegramSession(this.sessionId);
+          } catch {
+            console.error("[pi-web] Could not save the Telegram restart session");
+          }
+        }
         this.emit({
           type: "extension_ui_request",
           id: randomUUID(),
@@ -3329,6 +3364,15 @@ export async function destroyRpcSessionsForCwd(cwd: string): Promise<number> {
   );
   await Promise.all(sessions.map((session) => session.shutdown()));
   return sessions.length;
+}
+
+export function getTelegramBridgeSessionId(): string | null {
+  const ids = new Set<string>();
+  for (const session of getRegistry().values()) {
+    if (session.hasClassicTelegramBridge?.()) ids.add(session.sessionId);
+  }
+  // During takeover the displaced wrapper may not have observed its loss yet.
+  return ids.size === 1 ? [...ids][0] : null;
 }
 
 export function getRunningRpcSessionIds(): string[] {

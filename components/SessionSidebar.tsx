@@ -2,6 +2,7 @@
 
 import { useEffect, useImperativeHandle, useLayoutEffect, useState, useCallback, useMemo, useRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type Ref, type RefObject, type UIEvent as ReactUIEvent } from "react";
 import type { SessionInfo } from "@/lib/types";
+import { sendAgentCommand } from "@/lib/agent-client";
 import { listSessionFamilies, type SessionFamily, isHiddenRelation } from "@/lib/session-family";
 import { dispatchSessionRowContextMenu } from "@/lib/session-row-context-menu";
 import { newSessionDeepLink, sessionDeepLink } from "@/lib/session-links";
@@ -113,6 +114,7 @@ import {
   ChangesIcon,
   CheckIcon,
   ChevronIcon,
+  TelegramIcon,
   DotIcon,
   DotOutlineIcon,
   EyeIcon,
@@ -559,6 +561,10 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
   const [fileManager, setFileManager] = useState<FileManagerAvailability | null>(null);
   const [fileManagerError, setFileManagerError] = useState<string | null>(null);
   const [runningSessionIds, setRunningSessionIds] = useState<Set<string>>(() => new Set());
+  // undefined means this Pi Web deployment has not opted into the integration.
+  const [telegramBridgeSessionId, setTelegramBridgeSessionId] = useState<string | null>();
+  const [assigningTelegram, setAssigningTelegram] = useState(false);
+  const telegramAssignmentRef = useRef(false);
   const [awaitingInputSessionIds, setAwaitingInputSessionIds] = useState<Set<string>>(() => new Set());
   // Sessions whose subagents can still report back with a run there: not done yet (#1434).
   const [subagentsActiveSessionIds, setSubagentsActiveSessionIds] = useState<Set<string>>(() => new Set());
@@ -1033,6 +1039,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
         const data = await res.json() as {
           sessionListVersion: number;
           runningSessionIds?: string[];
+          telegramBridgeSessionId?: string | null;
           awaitingInputSessionIds?: string[];
           completionNotificationSuppressedSessionIds?: string[];
           subagentsActiveSessionIds?: string[];
@@ -1042,6 +1049,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
         answeredAt = Date.now();
         if (stopped || controller !== current) return;
         runningPollAuthoritativeRef.current = true;
+        setTelegramBridgeSessionId(data.telegramBridgeSessionId);
         if (typeof data.serverNow === "number") serverClockRef.current?.note(data.serverNow, startedAt, answeredAt);
         // The request's start: the server saw this set no earlier, so a marker dated by it is never late.
         runningObservedAtRef.current = { latest: startedAt, before: runningObservedAtRef.current.latest };
@@ -2530,21 +2538,53 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
     else filesPickerRef.current?.button("project")?.focus({ preventScroll: true });
   }, [filesShown, filesFocusRequest]);
 
-  const sessionMenuItems = (row: SessionRow): SidebarMenuItem[] => sessionMenuEntries(row.context, row.status).map((entry, index) => {
-    if (entry.kind === "separator") return { type: "separator", id: `separator-${index}` };
-    const label = t(SESSION_ACTION_LABEL_KEYS[entry.id]);
-    return {
-      type: "item",
-      id: entry.id,
-      label: entry.id === "delete" ? `${label}…` : label,
-      icon: sessionActionIcon(entry.id),
-      shortcut: entry.shortcut,
-      danger: entry.id === "delete",
-      disabled: entry.disabledReason !== undefined,
-      disabledReason: entry.disabledReason === "running" ? t("sidebar.cannotArchiveRunning") : undefined,
-      onSelect: ({ shiftKey }) => runSessionAction(entry.id, row, shiftKey),
-    };
-  });
+  const assignTelegram = async (session: SessionInfo) => {
+    if (telegramAssignmentRef.current) return;
+    telegramAssignmentRef.current = true;
+    setAssigningTelegram(true);
+    // The selected chat’s event stream shows the native takeover confirmation.
+    handleSelectSessionFromList(session);
+    try {
+      const result = await sendAgentCommand<{ connected: boolean }>(session.id, { type: "assign_telegram" });
+      if (!result.connected) showToast(t("sidebar.telegramNotAssigned"));
+      // Leave the badge to the next server snapshot, not the assignment response.
+    } catch (error) {
+      showToast(t("sidebar.telegramAssignFailed", { error: error instanceof Error ? error.message : String(error) }));
+    } finally {
+      telegramAssignmentRef.current = false;
+      setAssigningTelegram(false);
+    }
+  };
+
+  const sessionMenuItems = (row: SessionRow): SidebarMenuItem[] => {
+    const items = sessionMenuEntries(row.context, row.status).map((entry, index): SidebarMenuItem => {
+      if (entry.kind === "separator") return { type: "separator", id: `separator-${index}` };
+      const label = t(SESSION_ACTION_LABEL_KEYS[entry.id]);
+      return {
+        type: "item",
+        id: entry.id,
+        label: entry.id === "delete" ? `${label}…` : label,
+        icon: sessionActionIcon(entry.id),
+        shortcut: entry.shortcut,
+        danger: entry.id === "delete",
+        disabled: entry.disabledReason !== undefined,
+        disabledReason: entry.disabledReason === "running" ? t("sidebar.cannotArchiveRunning") : undefined,
+        onSelect: ({ shiftKey }) => runSessionAction(entry.id, row, shiftKey),
+      };
+    });
+    if (telegramBridgeSessionId !== undefined && !row.status.transient
+      && telegramBridgeSessionId !== row.family.root.id) {
+      items.unshift({
+        type: "item",
+        id: "assign-telegram",
+        label: t("sidebar.assignTelegram"),
+        icon: <TelegramIcon />,
+        disabled: assigningTelegram,
+        onSelect: () => { void assignTelegram(row.family.root); },
+      });
+    }
+    return items;
+  };
 
   const groupMenuItems = (project: SidebarProject, olderCount: number): SidebarMenuItem[] => {
     const archivedCount = archiveIndex.countByProject.get(project.key) ?? 0;
@@ -2843,6 +2883,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
     renamingProjectKey,
     confirmDeleteRootId,
     activeMenuRowKey,
+    telegramBridgeSessionId,
     onSelectFamily: handleSelectFamily,
     onToggleGroup: handleToggleGroup,
     onShowMore: handleShowMore,

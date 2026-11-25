@@ -2,6 +2,22 @@
 
 Two hooks for code that runs alongside Pi Web: a browser event for apps that embed it (an Electron wrapper, for example) and a server-side registry for pi extensions. Neither is needed to use Pi Web.
 
+## Beast fork: single-chat Telegram assignment
+
+With `STORM_TELEGRAM_SESSION_POINTER` set on the server and the
+`@llblab/pi-telegram` package installed, right-click a saved chat and choose
+**Assign as Telegram chat**. Pi Web opens that chat and runs the connector's
+native connect command. Confirm the native takeover prompt if the bot is
+already connected elsewhere. There is no separate disconnect step, and
+this action does not move chat history or queued work.
+
+In single-chat (classic) mode, the sidebar paper plane follows the live
+session status on the next sidebar poll. The pointer is an atomic restart
+hint for Beast's startup script, not proof of a connection. A takeover can
+briefly leave both old and new status lines visible internally; the sidebar
+shows no badge until there is a unique live report. This integration does
+not manage Telegram Threaded Mode or other Pi Web processes.
+
 ## Downstream Session Context Menu
 
 Electron wrappers and other downstream integrations can provide a session-row
