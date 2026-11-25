@@ -109,7 +109,10 @@ function ProviderUsageContent({ providerId, enabled, onOpen = false }: SummaryPr
   const report = snapshot?.status === "ready" ? snapshot.report : undefined;
   const isCodex = providerId === "openai-codex";
   const [now, setNow] = useState(() => Date.now());
-  const showCountdown = isCodex && Boolean(report?.buckets.some((bucket) => bucket.resetsAt));
+  const showCountdown = isCodex && Boolean(
+    report?.buckets.some((bucket) => bucket.resetsAt) ||
+    report?.resetCredits?.expirations.some((expiry) => expiry !== null)
+  );
   useEffect(() => {
     if (!showCountdown) return;
     const tick = () => setNow(Date.now());
@@ -146,6 +149,12 @@ function ProviderUsageContent({ providerId, enabled, onOpen = false }: SummaryPr
             </svg>
           )}
         </button>
+        {isCodex && (
+          <a href="https://chatgpt.com/codex/settings/usage" target="_blank" rel="noopener noreferrer"
+            style={{ fontSize: 12, color: "var(--text)", textDecoration: "underline" }}>
+            {t("providerUsage.codexDashboard")} ↗
+          </a>
+        )}
         {report && (
           <span title={new Date(report.capturedAt).toLocaleString(locale)} style={{ fontSize: 11, color: "var(--text-dim)", whiteSpace: "nowrap" }}>
             {t("providerUsage.updated", { time: formatUpdatedTime(report.capturedAt, locale) })}
@@ -178,7 +187,13 @@ function ProviderUsageContent({ providerId, enabled, onOpen = false }: SummaryPr
             {!!expirations.length && <div style={{ display: "flex", gap: "6px 18px", flexWrap: "wrap" }}>
               {expirations.map((expiry, index) => (
                 <span key={index} style={{ color: "var(--text-muted)" }}>
-                  {expiry === null ? t("providerUsage.noExpiry") : t("providerUsage.expires", { time: formatExactTime(expiry, locale) })}
+                  {expiry === null ? t("providerUsage.noExpiry") : <>
+                    {t("providerUsage.expires", { time: formatExactTime(expiry, locale) })}
+                    {" · "}
+                    <strong style={{ color: "var(--text)" }}>
+                      {formatCountdown(expiry, now, locale, t("providerUsage.expired"))}
+                    </strong>
+                  </>}
                 </span>
               ))}
             </div>}

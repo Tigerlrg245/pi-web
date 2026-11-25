@@ -929,6 +929,8 @@ export const zhTWLocale: LocalePlugin = {
     "providerUsage.remainingAndReset": "剩餘額度 / 重設時間",
     "providerUsage.bankedResets": "已存重設次數",
     "providerUsage.notReported": "未回報",
+    "providerUsage.codexDashboard": "Codex 用量面板",
+    "providerUsage.expired": "已到期",
     "providerUsage.noExpiry": "無到期時間",
     "providerUsage.expires": "到期：{time}",
     "providerUsage.expiriesNotReported": "有 {count} 次未回報到期時間",

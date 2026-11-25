@@ -929,6 +929,8 @@ export const enLocale: LocalePlugin = {
     "providerUsage.remainingAndReset": "Remaining / reset time",
     "providerUsage.bankedResets": "Banked resets",
     "providerUsage.notReported": "Not reported",
+    "providerUsage.codexDashboard": "Codex usage dashboard",
+    "providerUsage.expired": "Expired",
     "providerUsage.noExpiry": "No expiration",
     "providerUsage.expires": "Expires {time}",
     "providerUsage.expiriesNotReported": "Expiration not reported for {count}",
